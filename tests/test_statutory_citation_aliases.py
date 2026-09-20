@@ -1,19 +1,33 @@
-import sys
-import types
 import unittest
 
-import numpy as np
-
+import src.rag_pipelines.hybrid_rag as hybrid_rag_module
+import src.rag_pipelines.naive_rag as naive_rag_module
 from src.preprocessing.cleaners import normalize_statutory_citations
-from src.rag_pipelines.naive_rag import NaiveRAG
-from src.rag_pipelines.hybrid_rag import HybridRAG
+
+
+class FakeBM25:
+    def __init__(self, tokenized_documents):
+        self.tokenized_documents = tokenized_documents
+
+    def get_scores(self, tokenized_query):
+        query_tokens = set(tokenized_query)
+        return [
+            float(len(query_tokens.intersection(document_tokens)))
+            for document_tokens in self.tokenized_documents
+        ]
+
+
+class FakeEmbeddings:
+    def tolist(self):
+        return [[0.0, 0.0] for _ in range(len(self))]
+
+    def __len__(self):
+        return 2
 
 
 class FakeEncoder:
     def encode(self, texts, **kwargs):
-        if isinstance(texts, str):
-            texts = [texts]
-        return np.zeros((len(texts), 2))
+        return FakeEmbeddings()
 
 
 class FakeCollection:
@@ -22,6 +36,16 @@ class FakeCollection:
 
 
 class TestStatutoryCitationAliases(unittest.TestCase):
+    def setUp(self):
+        self.original_naive_bm25 = naive_rag_module.BM25Okapi
+        self.original_hybrid_bm25 = hybrid_rag_module.BM25Okapi
+        naive_rag_module.BM25Okapi = FakeBM25
+        hybrid_rag_module.BM25Okapi = FakeBM25
+
+    def tearDown(self):
+        naive_rag_module.BM25Okapi = self.original_naive_bm25
+        hybrid_rag_module.BM25Okapi = self.original_hybrid_bm25
+
     def test_common_section_aliases_share_one_canonical_form(self):
         aliases = [
             "Section 302",
@@ -48,7 +72,7 @@ class TestStatutoryCitationAliases(unittest.TestCase):
         )
 
     def test_naive_bm25_retrieves_with_an_alias(self):
-        rag = NaiveRAG.__new__(NaiveRAG)
+        rag = naive_rag_module.NaiveRAG.__new__(naive_rag_module.NaiveRAG)
         rag.chunks = []
         rag.bm25 = None
         rag.index_documents(
@@ -63,7 +87,7 @@ class TestStatutoryCitationAliases(unittest.TestCase):
         self.assertEqual(results, ["Section 302. Punishment for the offence."])
 
     def test_hybrid_bm25_retrieves_with_an_alias(self):
-        rag = HybridRAG.__new__(HybridRAG)
+        rag = hybrid_rag_module.HybridRAG.__new__(hybrid_rag_module.HybridRAG)
         rag.chunks = []
         rag.bm25 = None
         rag.encoder = FakeEncoder()
