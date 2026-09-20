@@ -6,7 +6,7 @@ import logging
 import requests
 import numpy as np
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional, Sequence
 
 # Ensure project root is in sys.path to resolve src.* imports cross-platform
 project_root = Path(__file__).resolve().parent.parent.parent
@@ -21,6 +21,7 @@ from rank_bm25 import BM25Okapi
 from src.utils import config
 from src.utils.helpers import save_jsonl
 from src.rag_pipelines.naive_rag import NaiveRAG
+from src.rag_pipelines.citation_graph import CitationGraph, extract_case_citations
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +39,27 @@ def min_max_normalize(scores: Dict[str, float]) -> Dict[str, float]:
 class HybridRAG(NaiveRAG):
     """Hybrid RAG pipeline combining BM25 lexical search and Dense vector search."""
 
-    def __init__(self, model_name: str = "gpt-4o-mini", embed_model: str = "all-MiniLM-L6-v2", alpha: float = 0.7):
-        """Initialize HybridRAG pipeline, loading embed model, ChromaDB, and alpha score weight."""
+    def __init__(
+        self,
+        model_name: str = "gpt-4o-mini",
+        embed_model: str = "all-MiniLM-L6-v2",
+        alpha: float = 0.7,
+        citation_expansion: bool = False,
+        citation_expansion_limit: int = 2,
+        citation_expansion_boost: float = 0.05,
+    ):
+        """Initialize HybridRAG with optional citation-graph expansion."""
         super().__init__(model_name=model_name)
+        if citation_expansion_limit < 1:
+            raise ValueError("citation_expansion_limit must be at least 1")
+        if citation_expansion_boost < 0:
+            raise ValueError("citation_expansion_boost must be non-negative")
         self.alpha = alpha
+        self.citation_expansion = citation_expansion
+        self.citation_expansion_limit = citation_expansion_limit
+        self.citation_expansion_boost = citation_expansion_boost
+        self.document_ids: List[str] = []
+        self.citation_graph = CitationGraph()
         try:
             logger.info(f"HybridRAG: Loading dense encoder {embed_model} on CPU...")
             self.encoder = SentenceTransformer(embed_model)
@@ -52,9 +70,34 @@ class HybridRAG(NaiveRAG):
             logger.error(f"Failed to initialize HybridRAG components: {e}")
             sys.exit(1)
 
-    def index_documents(self, chunks: List[str]) -> None:
-        """Index chunks in both BM25 and ChromaDB vector collection."""
+    def index_documents(
+        self,
+        chunks: List[str],
+        document_ids: Optional[List[str]] = None,
+        cited_authorities: Optional[Sequence[Sequence[str]]] = None,
+    ) -> None:
+        """Index chunks and optional document-level citation relationships."""
+        if document_ids is not None and len(document_ids) != len(chunks):
+            raise ValueError("document_ids must have the same length as chunks")
+        if cited_authorities is not None and len(cited_authorities) != len(chunks):
+            raise ValueError("cited_authorities must have the same length as chunks")
+
         self.chunks = chunks
+        self.document_ids = (
+            list(document_ids)
+            if document_ids is not None
+            else [f"chunk:{index}" for index in range(len(chunks))]
+        )
+        self.citation_graph = CitationGraph()
+
+        for index, chunk in enumerate(chunks):
+            citations = (
+                set(cited_authorities[index])
+                if cited_authorities is not None
+                else extract_case_citations(chunk)
+            )
+            self.citation_graph.add_document(self.document_ids[index], citations)
+
         try:
             tokenized_chunks = [chunk.split() for chunk in chunks]
             self.bm25 = BM25Okapi(tokenized_chunks)
@@ -86,7 +129,7 @@ class HybridRAG(NaiveRAG):
         return {doc: 1.0 - float(dist) for doc, dist in zip(docs, dists)}
 
     def retrieve(self, query: str, k: int = 5) -> List[str]:
-        """Perform hybrid retrieval using combined, normalized BM25 and Dense scores."""
+        """Perform hybrid retrieval with optional citation-graph expansion."""
         if not self.chunks:
             return []
         try:
@@ -100,6 +143,19 @@ class HybridRAG(NaiveRAG):
                 b_score = norm_bm25.get(chunk, 0.0)
                 d_score = norm_dense.get(chunk, 0.0)
                 combined[chunk] = self.alpha * d_score + (1.0 - self.alpha) * b_score
+
+            if self.citation_expansion:
+                query_citations = extract_case_citations(query)
+                if query_citations and self.document_ids:
+                    linked_documents = self.citation_graph.documents_linked_to(query_citations)
+                    linked_chunks = []
+                    for index, document_id in enumerate(self.document_ids):
+                        if document_id in linked_documents and self.chunks[index] not in combined:
+                            linked_chunks.append(self.chunks[index])
+                    expansion_score = max(combined.values(), default=0.0) + self.citation_expansion_boost
+                    for chunk in linked_chunks[: self.citation_expansion_limit]:
+                        combined[chunk] = expansion_score
+
             sorted_chunks = sorted(combined.keys(), key=lambda x: combined[x], reverse=True)
             return sorted_chunks[:k]
         except Exception as e:
