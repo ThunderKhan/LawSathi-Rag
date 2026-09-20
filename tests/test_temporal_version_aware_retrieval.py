@@ -1,5 +1,14 @@
+import sys
+import types
 import unittest
 from unittest.mock import MagicMock
+
+for mod in ["chromadb", "chromadb.config", "sentence_transformers", "rank_bm25", "openai"]:
+    if mod not in sys.modules:
+        try:
+            __import__(mod)
+        except ImportError:
+            sys.modules[mod] = MagicMock()
 
 from src.rag_pipelines.hybrid_rag import HybridRAG
 from src.rag_pipelines.legal_temporal_filter import (
