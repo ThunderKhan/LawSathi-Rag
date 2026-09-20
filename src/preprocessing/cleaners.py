@@ -41,6 +41,38 @@ def normalize_spacing(text: str) -> str:
         logger.error(f"Error normalizing whitespace: {e}")
         return text
 
+
+_STATUTORY_CITATION = re.compile(
+    r"(?<!\\w)(?:§|sections?|secs?\\.?|s\\.)\\s*"
+    r"(\\d+[A-Za-z]?(?:\\([^)]*\\))*)(?!\\w)",
+    re.IGNORECASE,
+)
+
+
+def normalize_statutory_citations(text: str) -> str:
+    """
+    Canonicalize common statutory section citation aliases for lexical retrieval.
+
+    Examples include "Section 302", "Sec. 302", "S. 302", and "§ 302".
+    """
+    if not text:
+        return ""
+    try:
+        text = _STATUTORY_CITATION.sub(
+            lambda match: f"section {match.group(1)}",
+            text,
+        )
+        text = re.sub(
+            r"\\b(section\\s+\\d+[A-Za-z]?(?:\\([^)]*\\))*)[.,;:]",
+            r"\\1",
+            text,
+            flags=re.IGNORECASE,
+        )
+        return text
+    except Exception as e:
+        logger.error(f"Error normalizing statutory citations: {e}")
+        return text
+
 def ensure_utf8_encoding(text: str) -> str:
     """
     Sanitize and enforce UTF-8 compatibility on the text, resolving encoding mismatches.
