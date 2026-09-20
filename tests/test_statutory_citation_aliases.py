@@ -4,12 +4,6 @@ import unittest
 
 import numpy as np
 
-fake_tiktoken = types.ModuleType("tiktoken")
-fake_tqdm = types.ModuleType("tqdm")
-fake_tqdm.tqdm = lambda items, **kwargs: items
-sys.modules.setdefault("tiktoken", fake_tiktoken)
-sys.modules.setdefault("tqdm", fake_tqdm)
-
 from src.preprocessing.cleaners import normalize_statutory_citations
 from src.rag_pipelines.naive_rag import NaiveRAG
 from src.rag_pipelines.hybrid_rag import HybridRAG
