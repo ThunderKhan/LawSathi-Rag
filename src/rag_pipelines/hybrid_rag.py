@@ -6,7 +6,7 @@ import logging
 import requests
 import numpy as np
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 # Ensure project root is in sys.path to resolve src.* imports cross-platform
 project_root = Path(__file__).resolve().parent.parent.parent
@@ -38,10 +38,14 @@ def min_max_normalize(scores: Dict[str, float]) -> Dict[str, float]:
 class HybridRAG(NaiveRAG):
     """Hybrid RAG pipeline combining BM25 lexical search and Dense vector search."""
 
-    def __init__(self, model_name: str = "gpt-4o-mini", embed_model: str = "all-MiniLM-L6-v2", alpha: float = 0.7):
-        """Initialize HybridRAG pipeline, loading embed model, ChromaDB, and alpha score weight."""
+    def __init__(self, model_name: str = "gpt-4o-mini", embed_model: str = "all-MiniLM-L6-v2", alpha: float = 0.7, max_chunks_per_document: Optional[int] = 2):
+        """Initialize HybridRAG and configure optional document-level result diversification."""
         super().__init__(model_name=model_name)
+        if max_chunks_per_document is not None and max_chunks_per_document < 1:
+            raise ValueError("max_chunks_per_document must be at least 1 or None")
         self.alpha = alpha
+        self.max_chunks_per_document = max_chunks_per_document
+        self.document_ids: List[str] = []
         try:
             logger.info(f"HybridRAG: Loading dense encoder {embed_model} on CPU...")
             self.encoder = SentenceTransformer(embed_model)
@@ -52,9 +56,16 @@ class HybridRAG(NaiveRAG):
             logger.error(f"Failed to initialize HybridRAG components: {e}")
             sys.exit(1)
 
-    def index_documents(self, chunks: List[str]) -> None:
-        """Index chunks in both BM25 and ChromaDB vector collection."""
+    def index_documents(self, chunks: List[str], document_ids: Optional[List[str]] = None) -> None:
+        """Index chunks and their optional source-document identities."""
+        if document_ids is not None and len(document_ids) != len(chunks):
+            raise ValueError("document_ids must have the same length as chunks")
         self.chunks = chunks
+        self.document_ids = (
+            list(document_ids)
+            if document_ids is not None
+            else [f"chunk:{index}" for index in range(len(chunks))]
+        )
         try:
             tokenized_chunks = [chunk.split() for chunk in chunks]
             self.bm25 = BM25Okapi(tokenized_chunks)
@@ -68,25 +79,33 @@ class HybridRAG(NaiveRAG):
         except Exception as e:
             logger.error(f"Failed to build hybrid index: {e}")
 
-    def _retrieve_bm25(self, query: str, limit: int) -> Dict[str, float]:
-        """Get top lexical matching scores."""
+    def _retrieve_bm25(self, query: str, limit: int) -> Dict[int, float]:
+        """Get top lexical matching scores keyed by chunk index."""
         tokenized = query.split()
         scores = self.bm25.get_scores(tokenized)
         top_idx = np.argsort(scores)[-limit:][::-1]
-        return {self.chunks[i]: float(scores[i]) for i in top_idx}
+        return {int(i): float(scores[i]) for i in top_idx}
 
-    def _retrieve_dense(self, query: str, limit: int) -> Dict[str, float]:
-        """Get top semantic matching similarities (1 - distance)."""
+    def _retrieve_dense(self, query: str, limit: int) -> Dict[int, float]:
+        """Get top semantic matching similarities keyed by chunk index."""
         q_emb = self.encoder.encode([query]).tolist()
         res = self.collection.query(query_embeddings=q_emb, n_results=limit)
         if not res or "documents" not in res or not res["documents"] or not res["documents"][0]:
             return {}
-        docs = res["documents"][0]
-        dists = res["distances"][0] if "distances" in res and res["distances"] else [0.0]*len(docs)
-        return {doc: 1.0 - float(dist) for doc, dist in zip(docs, dists)}
+        dists = res["distances"][0] if "distances" in res and res["distances"] else [0.0] * len(res["documents"][0])
+        ids = res.get("ids", [[]])[0] if res.get("ids") else []
+        if ids:
+            return {
+                int(chunk_id.rsplit("_", 1)[-1]): 1.0 - float(distance)
+                for chunk_id, distance in zip(ids, dists)
+            }
+        return {
+            self.chunks.index(document): 1.0 - float(distance)
+            for document, distance in zip(res["documents"][0], dists)
+        }
 
     def retrieve(self, query: str, k: int = 5) -> List[str]:
-        """Perform hybrid retrieval using combined, normalized BM25 and Dense scores."""
+        """Perform hybrid retrieval with an optional per-document diversity constraint."""
         if not self.chunks:
             return []
         try:
@@ -96,12 +115,26 @@ class HybridRAG(NaiveRAG):
             norm_bm25 = min_max_normalize(bm25_res)
             norm_dense = min_max_normalize(dense_res)
             combined = {}
-            for chunk in set(bm25_res.keys()).union(dense_res.keys()):
-                b_score = norm_bm25.get(chunk, 0.0)
-                d_score = norm_dense.get(chunk, 0.0)
-                combined[chunk] = self.alpha * d_score + (1.0 - self.alpha) * b_score
-            sorted_chunks = sorted(combined.keys(), key=lambda x: combined[x], reverse=True)
-            return sorted_chunks[:k]
+            for chunk_index in set(bm25_res.keys()).union(dense_res.keys()):
+                b_score = norm_bm25.get(chunk_index, 0.0)
+                d_score = norm_dense.get(chunk_index, 0.0)
+                combined[chunk_index] = self.alpha * d_score + (1.0 - self.alpha) * b_score
+            sorted_indices = sorted(combined.keys(), key=lambda index: combined[index], reverse=True)
+
+            selected_indices = []
+            document_counts: Dict[str, int] = {}
+            for index in sorted_indices:
+                document_id = self.document_ids[index]
+                if (
+                    self.max_chunks_per_document is not None
+                    and document_counts.get(document_id, 0) >= self.max_chunks_per_document
+                ):
+                    continue
+                selected_indices.append(index)
+                document_counts[document_id] = document_counts.get(document_id, 0) + 1
+                if len(selected_indices) >= k:
+                    break
+            return [self.chunks[index] for index in selected_indices]
         except Exception as e:
             logger.error(f"Error during hybrid retrieval: {e}")
             return []
