@@ -16,6 +16,7 @@ import pandas as pd
 from src.utils import config, helpers
 from src.preprocessing.cleaners import clean_text
 from src.preprocessing.chunker import chunk_text
+from src.rag_pipelines.legal_temporal_filter import extract_temporal_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -97,11 +98,13 @@ def process_record(record: dict, idx: int) -> dict:
         if not q or not a or not chunks:
             logger.warning(f"Record {idx} filtered out: empty fields after cleaning.")
             return None
+        document_id = f"q_{idx:04d}"
         return {
-            "id": f"q_{idx:04d}",
+            "id": document_id,
             "question": q,
             "answer": a,
-            "context_chunks": chunks
+            "context_chunks": chunks,
+            "legal_metadata": extract_temporal_metadata(record, document_id),
         }
     except Exception as e:
         logger.warning(f"Failed to process record at index {idx}: {e}")
