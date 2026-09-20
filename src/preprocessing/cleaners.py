@@ -43,8 +43,8 @@ def normalize_spacing(text: str) -> str:
 
 
 _STATUTORY_CITATION = re.compile(
-    r"(?<!\\w)(?:§|sections?|secs?\\.?|s\\.)\\s*"
-    r"(\\d+[A-Za-z]?(?:\\([^)]*\\))*)(?!\\w)",
+    r"(?<!\w)(?:§|sections?|secs?\.?|s\.)\s*"
+    r"(\d+[A-Za-z]?(?:\([^)]*\))*)(?!\w)",
     re.IGNORECASE,
 )
 
@@ -63,8 +63,8 @@ def normalize_statutory_citations(text: str) -> str:
             text,
         )
         text = re.sub(
-            r"\\b(section\\s+\\d+[A-Za-z]?(?:\\([^)]*\\))*)[.,;:]",
-            r"\\1",
+            r"\b(section\s+\d+[A-Za-z]?(?:\([^)]*\))*)[.,;:]",
+            r"\1",
             text,
             flags=re.IGNORECASE,
         )
