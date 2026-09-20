@@ -25,18 +25,22 @@ def strip_html_tags(text: str) -> str:
 
 def normalize_spacing(text: str) -> str:
     """
-    Collapse all multiple whitespaces, tabs, and newlines into a single space.
-    
+    Normalize horizontal whitespace while preserving meaningful legal line breaks.
+
     Args:
         text (str): Input text with inconsistent whitespaces.
-        
+
     Returns:
-        str: Spacing-normalized text.
+        str: Spacing-normalized text with paragraph and heading boundaries retained.
     """
     if not text:
         return ""
     try:
-        return re.sub(r"\s+", " ", text).strip()
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"[^\S\n]+", " ", text)
+        text = re.sub(r" *\n *", "\n", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
     except Exception as e:
         logger.error(f"Error normalizing whitespace: {e}")
         return text
