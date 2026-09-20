@@ -16,6 +16,7 @@ if str(project_root) not in sys.path:
 
 from src.utils import config
 from src.utils.helpers import retry_with_backoff, save_jsonl
+from src.preprocessing.cleaners import normalize_statutory_citations
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ class NaiveRAG:
     def index_documents(self, chunks: List[str]) -> None:
         """Store documents and build the BM25 index."""
         self.chunks = chunks
-        tokenized_chunks = [chunk.split() for chunk in chunks]
+        tokenized_chunks = [normalize_statutory_citations(chunk).split() for chunk in chunks]
         self.bm25 = BM25Okapi(tokenized_chunks)
 
     def retrieve(self, query: str, k: int = 5) -> List[str]:
@@ -43,7 +44,7 @@ class NaiveRAG:
         if not self.bm25 or not self.chunks:
             logger.warning("Empty search index. Returning zero results.")
             return []
-        tokenized_query = query.split()
+        tokenized_query = normalize_statutory_citations(query).split()
         scores = self.bm25.get_scores(tokenized_query)
         k = min(k, len(self.chunks))
         top_indices = np.argsort(scores)[-k:][::-1]
